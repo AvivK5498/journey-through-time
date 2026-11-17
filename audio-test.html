@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Journey audio bench</title>
+<style>
+  :root { --bg: #15130f; --panel: #211e18; --ink: #efe6d2; --dim: #a39a86; --acc: #e0a64a; --bar: #7fc4a4; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { color: var(--dim); margin: 0 0 16px; }
+  section { background: var(--panel); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: 110px 1fr 56px; gap: 8px 10px; align-items: center; }
+  label { color: var(--dim); }
+  output { font-variant-numeric: tabular-nums; text-align: right; }
+  input[type=range], select { width: 100%; accent-color: var(--acc); }
+  select { background: #2c2820; color: var(--ink); border: 1px solid #4a4335; border-radius: 6px; padding: 4px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; }
+  button { background: #2c2820; color: var(--ink); border: 1px solid #4a4335; border-radius: 6px; padding: 7px 12px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--acc); }
+  button.main { background: var(--acc); color: #1a1408; border-color: var(--acc); font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  #bars { display: flex; gap: 6px; height: 90px; align-items: flex-end; }
+  #bars div { flex: 1; background: var(--bar); border-radius: 3px 3px 0 0; min-height: 2px; }
+  #status { color: var(--dim); margin-top: 8px; font-variant-numeric: tabular-nums; }
+  fieldset:disabled { opacity: .5; }
+  fieldset { border: 0; padding: 0; margin: 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Journey audio bench</h1>
+  <p class="sub">Generative score, car and ambience from <code>src/audio/</code>. Serve the project folder over http (for example <code>npx serve .</code>) and open this page.</p>
+  <section class="row">
+    <button id="start" class="main">Start audio</button>
+    <button id="journey" disabled>Play the 2-minute journey</button>
+    <label><input type="checkbox" id="mute" disabled> Mute</label>
+  </section>
+  <section>
+    <fieldset id="controls" disabled>
+      <div class="grid">
+        <label for="era">Era</label><select id="era"></select><span></span>
+        <label for="eb">Era blend</label><input id="eb" type="range" min="0" max="1" step="0.01" value="0"><output for="eb"></output>
+        <label for="ba">Biome A</label><select id="ba"></select><span></span>
+        <label for="bb">Biome B</label><select id="bb"></select><span></span>
+        <label for="bbl">Biome blend</label><input id="bbl" type="range" min="0" max="1" step="0.01" value="0"><output for="bbl"></output>
+        <label for="spd">Speed m/s</label><input id="spd" type="range" min="0" max="60" step="0.5" value="0"><output for="spd"></output>
+        <label for="surf">Surface</label><select id="surf"><option value="0">Game trail</option><option value="1">Dirt track</option><option value="2">Stone paving</option></select><span></span>
+      </div>
+    </fieldset>
+  </section>
+  <section class="row" id="events">
+    <button data-s="0" disabled>First humans' camp</button>
+    <button data-s="1" disabled>Cave paintings</button>
+    <button data-s="2" disabled>Gobekli Tepe</button>
+    <button data-s="3" disabled>Giza</button>
+    <button data-s="-1" disabled>Loop restart</button>
+  </section>
+  <section>
+    <div id="bars"></div>
+    <div id="status">Not started.</div>
+  </section>
+</main>
+<script type="module">
+import audio from './src/audio/index.js';
+import data from './src/audio/data.js';
+import { journey, EVENTS, LEN } from './src/audio/journey.js';
+
+const $ = (id) => document.getElementById(id);
+const opt = (sel, names) => names.forEach((n, i) => sel.add(new Option(n, i)));
+opt($('era'), data.eras.map((e) => e.n));
+for (const id of ['ba', 'bb']) opt($(id), data.bios.map((b) => b.n));
+const bars = [];
+for (let i = 0; i < 8; i++) bars.push($('bars').appendChild(document.createElement('div')));
+const o = { era: 0, eb: 0, ba: 0, bb: 0, bbl: 0, spd: 0, surf: 0 };
+let jt = -1, last = 0, evi = 0;
+
+$('start').onclick = async () => {
+  await audio.start();
+  $('start').disabled = true; $('start').textContent = 'Running';
+  for (const el of document.querySelectorAll('button[data-s], #journey, #mute')) el.disabled = false;
+  $('controls').disabled = false;
+  requestAnimationFrame(frame);
+};
+$('mute').onchange = (e) => audio.mute(e.target.checked);
+for (const b of document.querySelectorAll('button[data-s]')) b.onclick = () => { const s = +b.dataset.s; s < 0 ? audio.loopRestart() : audio.stinger(s); };
+$('journey').onclick = () => {
+  if (jt >= 0) { jt = -1; $('journey').textContent = 'Play the 2-minute journey'; $('controls').disabled = false; return; }
+  jt = 0; evi = 0; $('journey').textContent = 'Stop journey'; $('controls').disabled = true;
+};
+
+function frame(now) {
+  const dt = last ? Math.min(0.1, (now - last) / 1000) : 0;
+  last = now;
+  if (jt >= 0) {
+    jt += dt;
+    journey(jt, o);
+    while (evi < EVENTS.length && EVENTS[evi][0] <= jt) { const id = EVENTS[evi++][1]; id < 0 ? audio.loopRestart() : audio.stinger(id); }
+    for (const k in o) { const el = $(k); el.value = k == 'era' || k == 'ba' || k == 'bb' || k == 'surf' ? Math.round(o[k]) : o[k]; }
+    if (jt >= LEN) $('journey').onclick();
+  } else for (const k in o) o[k] = +$(k).value;
+  audio.set(o.era, o.eb, o.ba, o.bb, o.bbl, o.spd, o.surf);
+  for (const el of document.querySelectorAll('output')) el.value = (+$(el.htmlFor).value).toFixed(2);
+  const lv = audio.readLevels();
+  for (let i = 0; i < 8; i++) bars[i].style.height = (2 + lv[i] * 98) + '%';
+  const c = jt >= 120 ? jt - 120 : jt;
+  $('status').textContent = jt >= 0
+    ? `Journey ${jt.toFixed(1)} s · clock ${c.toFixed(1)} s · ${data.eras[o.era].n} · ${data.bios[o.bbl < 0.5 ? o.ba : o.bb].n} · ${o.spd.toFixed(0)} m/s`
+    : `${data.eras[o.era].n} · ${data.bios[o.bbl < 0.5 ? o.ba : o.bb].n} · ${o.spd.toFixed(0)} m/s`;
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>

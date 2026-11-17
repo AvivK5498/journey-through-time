@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UI test</title>
+<link rel="icon" href="data:,">
+<style>
+html,body{margin:0;height:100%;background:#000;overflow:hidden}
+#bg{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+#pick{position:fixed;right:8px;top:8px;z-index:100;font:12px system-ui;background:rgba(0,0,0,.6);color:#fff;padding:6px;border-radius:4px}
+.cap-mode #pick{display:none}
+.cap-mode #jt,.cap-mode #jt *{transition:none!important}
+</style>
+</head>
+<body>
+<!-- Standalone harness for src/ui.js: a painted stand-in for the game view behind the
+     overlay, and every UI state reachable by name: ?s=<state>  (see STATES below).
+     Serve the project root over http (tools/ui-shot.mjs does) - modules do not load from file://. -->
+<canvas id="bg"></canvas>
+<div id="pick"></div>
+<script type="module">
+import { state } from './src/state.js';
+import { EVENTS, yearAt, updateTime } from './src/world/time.js';
+import { initUI, updateUI, showEvent, openMenu, openLogbook, setVeil, fadeVeil, ui } from './src/ui.js';
+
+// ---------------------------------------------------------------- painted backgrounds
+// Value noise ridges + aerial perspective + grain: reads as a hazy landscape photo.
+function hash(i) { i = (i ^ 61) ^ (i >>> 16); i = Math.imul(i, 9); i ^= i >>> 4; i = Math.imul(i, 0x27d4eb2d); i ^= i >>> 15; return (i >>> 0) / 4294967296; }
+function vnoise(x, seed) { const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f); return hash(i * 131 + seed) * (1 - u) + hash((i + 1) * 131 + seed) * u; }
+function fbm(x, seed) { let a = 0, s = 1, t = 0; for (let o = 0; o < 6; o++) { a += vnoise(x * s, seed + o * 17) / s; t += 1 / s; s *= 2.03; } return a / t; }
+const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+const rgb = (c) => `rgb(${c.map((v) => Math.round(v)).join(',')})`;
+
+const SCENES = {
+  // Bright midday desert: pale sky right behind the HUD, the hard case for light text.
+  bright: { sky: [[118, 160, 214], [196, 214, 230], [240, 236, 226]], sun: [0.72, 0.16, 1.0], haze: [232, 226, 212], ground: [[214, 182, 132], [168, 128, 82]], ridges: [[196, 168, 132], [170, 136, 98], [148, 112, 76]], horizon: 0.58, road: [120, 104, 86] },
+  // Golden hour savannah: warm, mid-key.
+  gold: { sky: [[64, 98, 150], [214, 162, 112], [250, 206, 150]], sun: [0.3, 0.5, 1.4], haze: [240, 196, 146], ground: [[150, 120, 64], [70, 58, 30]], ridges: [[176, 138, 104], [120, 96, 70], [74, 62, 42]], horizon: 0.6, road: [96, 78, 56] },
+  // Ice at dusk: dark ground, cold low-key sky.
+  ice: { sky: [[22, 32, 54], [70, 92, 124], [150, 162, 176]], sun: [0.2, 0.6, 0.5], haze: [128, 142, 160], ground: [[60, 70, 84], [18, 22, 30]], ridges: [[96, 108, 126], [58, 66, 82], [30, 36, 48]], horizon: 0.55, road: [40, 44, 52] },
+};
+
+function paint(name) {
+  const S = SCENES[name], cv = document.getElementById('bg');
+  const W = cv.width = innerWidth, H = cv.height = innerHeight;
+  const g = cv.getContext('2d');
+  const hz = H * S.horizon;
+  let gr = g.createLinearGradient(0, 0, 0, hz);
+  gr.addColorStop(0, rgb(S.sky[0])); gr.addColorStop(0.6, rgb(S.sky[1])); gr.addColorStop(1, rgb(S.sky[2]));
+  g.fillStyle = gr; g.fillRect(0, 0, W, hz + 2);
+  const [sx, sy, si] = S.sun;
+  gr = g.createRadialGradient(W * sx, H * sy, 0, W * sx, H * sy, H * 0.9);
+  gr.addColorStop(0, `rgba(255,248,232,${0.95 * si})`); gr.addColorStop(0.06, `rgba(255,236,200,${0.55 * si})`); gr.addColorStop(1, 'rgba(255,230,200,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  // soft clouds
+  for (let c = 0; c < 6; c++) {
+    const cx = hash(c * 7 + name.length) * W, cy = hz * (0.15 + 0.55 * hash(c * 13 + 3)), rw = W * (0.12 + 0.2 * hash(c * 5 + 1));
+    gr = g.createRadialGradient(cx, cy, 0, cx, cy, rw);
+    gr.addColorStop(0, 'rgba(255,255,255,0.22)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.save(); g.translate(cx, cy); g.scale(1, 0.18); g.translate(-cx, -cy); g.fillStyle = gr; g.fillRect(cx - rw, cy - rw, rw * 2, rw * 2); g.restore();
+  }
+  // ridges, far to near, hazed toward the sky colour
+  S.ridges.forEach((col, r) => {
+    const amp = H * (0.05 + r * 0.03), base = hz - H * 0.02 + r * H * 0.025, fr = 0.0018 + r * 0.0012;
+    const c = mix(S.haze, col, 0.45 + r * 0.25);
+    g.beginPath(); g.moveTo(0, H);
+    for (let x = 0; x <= W; x += 4) g.lineTo(x, base - amp * fbm(x * fr, 100 + r * 31));
+    g.lineTo(W, H); g.closePath();
+    gr = g.createLinearGradient(0, base - amp, 0, H);
+    gr.addColorStop(0, rgb(c)); gr.addColorStop(1, rgb(mix(c, S.ground[1], 0.6)));
+    g.fillStyle = gr; g.fill();
+  });
+  // foreground plain
+  gr = g.createLinearGradient(0, hz + H * 0.04, 0, H);
+  gr.addColorStop(0, rgb(mix(S.haze, S.ground[0], 0.7))); gr.addColorStop(1, rgb(S.ground[1]));
+  g.fillStyle = gr; g.fillRect(0, hz + H * 0.04, W, H);
+  // road in perspective
+  const vx = W * 0.52, vy = hz + H * 0.04;
+  g.beginPath(); g.moveTo(vx - 3, vy); g.lineTo(vx + 3, vy); g.lineTo(W * 0.78, H); g.lineTo(W * 0.26, H); g.closePath();
+  gr = g.createLinearGradient(0, vy, 0, H); gr.addColorStop(0, rgb(mix(S.haze, S.road, 0.5))); gr.addColorStop(1, rgb(S.road));
+  g.fillStyle = gr; g.fill();
+  // tufts / stones
+  for (let i = 0; i < 1400; i++) {
+    const t = hash(i * 3 + 1), y = vy + (H - vy) * t * t, x = hash(i * 7 + 2) * W, s = 1 + 9 * t * t;
+    g.fillStyle = `rgba(${S.ground[1].join(',')},${0.25 + 0.4 * hash(i)})`;
+    g.fillRect(x, y, s * 1.6, s * 0.5);
+  }
+  // car silhouette (third-person chase framing)
+  const cx = W * 0.5, cy = H * 0.62, cw = W * 0.1; // where the chase camera frames the car
+  g.fillStyle = 'rgba(0,0,0,0.35)'; g.beginPath(); g.ellipse(cx, cy + cw * 0.2, cw * 0.62, cw * 0.06, 0, 0, Math.PI * 2); g.fill();
+  gr = g.createLinearGradient(0, cy - cw * 0.3, 0, cy + cw * 0.2); gr.addColorStop(0, '#5a6068'); gr.addColorStop(0.5, '#2a2e34'); gr.addColorStop(1, '#14161a');
+  g.fillStyle = gr; g.beginPath();
+  g.moveTo(cx - cw * 0.5, cy + cw * 0.18); g.lineTo(cx - cw * 0.52, cy - cw * 0.04); g.lineTo(cx - cw * 0.34, cy - cw * 0.1);
+  g.lineTo(cx - cw * 0.26, cy - cw * 0.3); g.lineTo(cx + cw * 0.26, cy - cw * 0.3); g.lineTo(cx + cw * 0.34, cy - cw * 0.1);
+  g.lineTo(cx + cw * 0.52, cy - cw * 0.04); g.lineTo(cx + cw * 0.5, cy + cw * 0.18); g.closePath(); g.fill();
+  g.fillStyle = 'rgba(200,40,30,0.85)'; g.fillRect(cx - cw * 0.46, cy, cw * 0.12, cw * 0.035); g.fillRect(cx + cw * 0.34, cy, cw * 0.12, cw * 0.035);
+  // vignette + grain
+  gr = g.createRadialGradient(W / 2, H / 2, H * 0.4, W / 2, H / 2, H * 1.1);
+  gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(0,0,0,0.35)');
+  g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  const img = g.getImageData(0, 0, W, H), d = img.data;
+  for (let i = 0; i < d.length; i += 4) { const n = (hash(i) - 0.5) * 14; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+  g.putImageData(img, 0, 0);
+}
+
+// ---------------------------------------------------------------- states
+const FILLER = ['Fire-hardened spears', 'Out of Africa', 'First boats', 'The dog', 'Çatalhöyük', 'Jericho walls', 'First wheat', 'Copper smelting', 'The wheel', 'Uruk', 'Cuneiform', 'Stonehenge', 'Mohenjo-daro', 'Hammurabi', 'Iron', 'Phoenician alphabet', 'Athens', 'Persepolis', 'The Great Wall', 'Rome', 'Petra', 'Teotihuacan', 'Silk Road', 'Hagia Sophia'];
+function grow28() {
+  while (EVENTS.length < 28) {
+    const i = EVENTS.length;
+    EVENTS.push({ id: i, name: FILLER[i - 4], yearText: `${(28 - i) * 300} BCE`, region: 0, t0: 0, t1: 0, caption: 'A placeholder entry used to check that the logbook layout holds 28 events.' });
+  }
+}
+
+let started = false;
+function setClock(c) { state.clock = c; updateTime(state); }
+const STATES = {
+  start: { bg: 'gold', run() { setClock(0); } },
+  hud: { bg: 'gold', run() { go(); setClock(2); state.speed = 40; } },
+  'hud-bright': { bg: 'bright', run() { go(); setClock(91); state.speed = 38.6; } },
+  'hud-dark': { bg: 'ice', run() { go(); setClock(33); state.speed = 41.2; } },
+  'first-person': { bg: 'gold', run() { go(); setClock(50); state.view = 1; } },
+  'caption-bright': { bg: 'bright', run() { go(); setClock(92); state.speed = 40; showEvent(3); } },
+  'caption-dark': { bg: 'ice', run() { go(); setClock(31); state.speed = 40; showEvent(1); } },
+  'caption-gold': { bg: 'gold', run() { go(); setClock(1); state.speed = 30; showEvent(0); } },
+  'caption-first-person': { bg: 'gold', run() { go(); setClock(92); state.view = 1; showEvent(3); } },
+  menu: { bg: 'bright', run() { go(); setClock(47); openMenu(true); } },
+  logbook: { bg: 'gold', run() { go(); setClock(70); state.found = 0b0101; state.loop = 1; openLogbook(true); } },
+  'logbook-empty': { bg: 'ice', run() { go(); setClock(5); state.found = 0; state.loop = 0; openLogbook(true); } },
+  'logbook-28': { bg: 'bright', run() { grow28(); go(); setClock(110); state.found = 0b1010110101101101011101101111; state.loop = 3; openLogbook(true); } },
+  veil: { bg: 'gold', run() { go(); setClock(119); setVeil(0.82); fadeVeil(0.82, 0, 'The fog thickens. The road goes on.'); } },
+};
+function go() { if (!started) { started = true; document.querySelector('#jt .go').click(); } }
+
+const q = new URLSearchParams(location.search);
+const name = STATES[q.get('s')] ? q.get('s') : 'start';
+if (q.has('cap')) document.documentElement.classList.add('cap-mode');
+Object.assign(state, { view: 0, speed: 0, found: 0, loop: 0 });
+paint(STATES[name].bg);
+initUI({ onDrive() {}, onQuality(t) { console.log('quality', t); }, onPause(p) { console.log('paused', p); } });
+STATES[name].run();
+updateUI(0.016);
+if (!q.has('cap')) { // live mode: keep updating, and offer a state picker
+  let last = performance.now();
+  const loop = (t) => { updateUI(Math.min(0.1, (t - last) / 1000)); last = t; requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+  document.getElementById('pick').innerHTML = Object.keys(STATES).map((k) => `<a style="color:#fff;margin:0 4px" href="?s=${k}">${k}</a>`).join('');
+}
+window.__states = Object.keys(STATES);
+window.__ready = true;
+</script>
+</body>
+</html>

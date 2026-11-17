@@ -1,0 +1,15 @@
+{
+  "name": "journey-through-time",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --dev",
+    "perf": "node tools/perf.mjs",
+    "shots": "node tools/shots.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "playwright": "1.65.0"
+  }
+}

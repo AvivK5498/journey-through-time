@@ -1,0 +1,8 @@
+node_modules/
+dist/
+share/
+reports/
+internal_docs/
+docs/
+.claude/
+.DS_Store
